@@ -1,219 +1,394 @@
-"""A Crossplane composition function that commits files to GitHub repositories."""
+"""GitHub File Manager Function for Crossplane.
+
+A Crossplane composition function that commits files directly to GitHub repositories
+using either personal access tokens or GitHub App authentication.
+"""
 
 import base64
-import grpc
+import json
+import time
+
+import grpc.aio
+import jwt
 import requests
-from crossplane.function import logging, response
+from crossplane.function import logging
 from crossplane.function.proto.v1 import run_function_pb2 as fnv1
-from crossplane.function.proto.v1 import run_function_pb2_grpc as grpcv1
+from google.protobuf import json_format
+
+# Constants for HTTP status codes
+HTTP_OK = 200
+HTTP_CREATED = 201
+HTTP_NOT_FOUND = 404
+
+# Security: timeout for requests
+REQUEST_TIMEOUT = 30
 
 
 class GitHubFileManager:
     """GitHub API client for file operations."""
-    
-    def __init__(self, token: str, logger):
-        """Initialize with GitHub token and logger."""
-        self.token = token
-        self.logger = logger
-        self.headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "kubecore-function-github-file-manager"
-        }
-    
-    def commit_file(self, repository: str, path: str, content: str, 
-                   message: str, branch: str = "main") -> dict:
+
+    def __init__(
+        self,
+        logger,
+        github_token: str | None = None,
+        github_app: dict | None = None,
+    ):
+        """Initialize with GitHub authentication and logger.
+
+        Args:
+            logger: Logger instance
+            github_token: GitHub personal access token (optional)
+            github_app: GitHub App credentials dict with appId,
+                        installationId, privateKey (optional)
         """
-        Commit a file to a GitHub repository.
-        
+        self.logger = logger
+        self.github_token = github_token
+        self.github_app = github_app
+        self.access_token = None
+        self.token_expires_at = None
+
+        # Validate authentication
+        if not github_token and not github_app:
+            msg = "Either github_token or github_app credentials must be provided"
+            raise ValueError(msg)
+
+        if github_token and github_app:
+            msg = (
+                "Cannot use both github_token and github_app "
+                "authentication simultaneously"
+            )
+            raise ValueError(msg)
+
+        # Initialize headers
+        self.headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Crossplane-GitHub-Function",
+        }
+
+    def _generate_jwt_token(self) -> str:
+        """Generate a JWT token for GitHub App authentication."""
+        if not self.github_app:
+            msg = "GitHub App credentials not provided"
+            raise ValueError(msg)
+
+        # JWT payload
+        now = int(time.time())
+        payload = {
+            "iat": now - 60,  # issued 1 minute ago to account for clock skew
+            "exp": now + 600,  # expires in 10 minutes
+            "iss": self.github_app["appId"],
+        }
+
+        # Generate JWT token using the private key
+        jwt_token = jwt.encode(
+            payload,
+            self.github_app["privateKey"],
+            algorithm="RS256",
+        )
+        return jwt_token
+
+    def _get_installation_access_token(self) -> str:
+        """Get an installation access token using GitHub App authentication."""
+        if not self.github_app:
+            msg = "GitHub App credentials not provided"
+            raise ValueError(msg)
+
+        # Check if we have a valid token
+        if (
+            self.access_token
+            and self.token_expires_at
+            and time.time() < self.token_expires_at
+        ):
+            return self.access_token
+
+        jwt_token = self._generate_jwt_token()
+        installation_id = self.github_app["installationId"]
+        url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+
+        headers = {
+            "Authorization": f"Bearer {jwt_token}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+
+        self.logger.info(
+            f"Getting installation access token for installation {installation_id}"
+        )
+        response = requests.post(url, headers=headers, timeout=REQUEST_TIMEOUT)
+
+        if response.status_code != HTTP_CREATED:
+            error_msg = (
+                f"Failed to get installation access token: "
+                f"{response.status_code} - {response.text}"
+            )
+            self.logger.error(error_msg)
+            raise requests.RequestException(error_msg)
+
+        token_data = response.json()
+        self.access_token = token_data["token"]
+
+        # Parse expiration time (subtract 5 minutes for safety)
+        import datetime
+
+        expires_at = datetime.datetime.fromisoformat(
+            token_data["expires_at"].replace("Z", "+00:00")
+        )
+        self.token_expires_at = expires_at.timestamp() - (5 * 60)
+
+        self.logger.info(
+            f"Successfully obtained installation access token "
+            f"(expires at {token_data['expires_at']})"
+        )
+        return self.access_token
+
+    def _get_auth_headers(self) -> dict:
+        """Get authentication headers based on configured method."""
+        headers = self.headers.copy()
+
+        if self.github_token:
+            headers["Authorization"] = f"token {self.github_token}"
+        elif self.github_app:
+            access_token = self._get_installation_access_token()
+            headers["Authorization"] = f"token {access_token}"
+        else:
+            msg = "No authentication method configured"
+            raise ValueError(msg)
+
+        return headers
+
+    def commit_file(
+        self,
+        repository: str,
+        path: str,
+        content: str,
+        message: str,
+        branch: str = "main",
+    ) -> dict:
+        """Commit a file to a GitHub repository.
+
         Args:
             repository: GitHub repository in format "owner/repo"
-            path: File path within the repository
-            content: File content to commit
+            path: File path within repository
+            content: File content as string
             message: Commit message
             branch: Target branch (default: main)
-            
+
         Returns:
             dict: GitHub API response with commit info
-            
+
         Raises:
             requests.RequestException: If GitHub API request fails
         """
         url = f"https://api.github.com/repos/{repository}/contents/{path}"
-        
-        # Check if file exists (to get SHA for updates)
+        auth_headers = self._get_auth_headers()
+
+        # Encode content as base64
+        encoded_content = base64.b64encode(content.encode()).decode("ascii")
+
+        # Check if file exists to get SHA for update
         current_sha = None
         try:
-            get_response = requests.get(url, headers=self.headers, params={"ref": branch})
-            if get_response.status_code == 200:
+            get_response = requests.get(
+                url,
+                headers=auth_headers,
+                params={"ref": branch},
+                timeout=REQUEST_TIMEOUT,
+            )
+            if get_response.status_code == HTTP_OK:
                 current_sha = get_response.json().get("sha")
-                self.logger.info(f"File {path} exists, will update with SHA: {current_sha}")
-            elif get_response.status_code == 404:
+                self.logger.info(
+                    f"File {path} exists, will update with SHA: {current_sha}"
+                )
+            elif get_response.status_code == HTTP_NOT_FOUND:
                 self.logger.info(f"File {path} does not exist, will create new file")
             else:
-                self.logger.warning(f"Unexpected response checking file existence: {get_response.status_code}")
+                self.logger.warning(
+                    f"Unexpected response checking file existence: "
+                    f"{get_response.status_code}"
+                )
         except Exception as e:
             self.logger.warning(f"Error checking file existence: {e}")
-        
+
         # Prepare commit data
         commit_data = {
             "message": message,
-            "content": base64.b64encode(content.encode('utf-8')).decode('ascii'),
-            "branch": branch
+            "content": encoded_content,
+            "branch": branch,
         }
-        
-        # Add SHA if updating existing file
+
         if current_sha:
             commit_data["sha"] = current_sha
-        
+
         # Commit the file
         self.logger.info(f"Committing file {path} to {repository}/{branch}")
-        commit_response = requests.put(url, json=commit_data, headers=self.headers)
-        
-        if commit_response.status_code in [200, 201]:
+        commit_response = requests.put(
+            url,
+            json=commit_data,
+            headers=auth_headers,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if commit_response.status_code in [HTTP_OK, HTTP_CREATED]:
             result = commit_response.json()
-            self.logger.info(f"Successfully committed {path} with SHA: {result['content']['sha']}")
+            self.logger.info(
+                f"Successfully committed {path} with SHA: {result['content']['sha']}"
+            )
             return {
                 "success": True,
                 "path": path,
-                "sha": result['content']['sha'],
-                "githubUrl": result['content']['html_url']
+                "sha": result["content"]["sha"],
+                "githubUrl": f"https://github.com/{repository}/blob/{branch}/{path}",
             }
         else:
-            error_msg = f"Failed to commit {path}: {commit_response.status_code} - {commit_response.text}"
+            error_msg = (
+                f"Failed to commit {path}: "
+                f"{commit_response.status_code} - {commit_response.text}"
+            )
             self.logger.error(error_msg)
             raise requests.RequestException(error_msg)
 
 
-class FunctionRunner(grpcv1.FunctionRunnerService):
-    """A FunctionRunner handles gRPC RunFunctionRequests."""
+class FunctionRunner:
+    """Main function runner for Crossplane composition function."""
 
     def __init__(self):
-        """Create a new FunctionRunner."""
+        """Initialize the function runner."""
         self.log = logging.get_logger()
 
-    async def RunFunction(
+    async def RunFunction(  # noqa: PLR0915, C901
         self, req: fnv1.RunFunctionRequest, _: grpc.aio.ServicerContext
     ) -> fnv1.RunFunctionResponse:
         """Run the GitHub file manager function."""
-        log = self.log.bind(tag=req.meta.tag)
-        log.info("Running GitHub file manager function")
+        log = self.log
+        log.info("Starting GitHub file manager function")
 
-        rsp = response.to(req)
-        
+        # Initialize response
+        rsp = fnv1.RunFunctionResponse()
+
         try:
             # Extract input data from protobuf struct
             if not req.input:
-                raise ValueError("No input provided")
-            
+                msg = "No input provided"
+                raise ValueError(msg)
+
             # Convert protobuf struct to dictionary
-            from google.protobuf import json_format
             input_dict = json_format.MessageToDict(req.input)
-            
-            # Get GitHub token and files from input
+            log.info(f"Input received: {json.dumps(input_dict, indent=2)}")
+
+            # Extract required parameters
             github_token = input_dict.get("githubToken")
+            github_app = input_dict.get("githubApp")
             files = input_dict.get("files", [])
-            
-            if not github_token:
-                raise ValueError("GitHub token is required")
-            
+
+            # Validate authentication
+            if not github_token and not github_app:
+                msg = "Either githubToken or githubApp authentication must be provided"
+                raise ValueError(msg)
+
+            if github_token and github_app:
+                msg = (
+                    "Cannot use both githubToken and githubApp "
+                    "authentication simultaneously"
+                )
+                raise ValueError(msg)
+
             if not files:
-                raise ValueError("At least one file must be specified")
-            
-            log.info(f"Processing {len(files)} files")
-            
-            # Initialize GitHub client
-            github_client = GitHubFileManager(github_token, log)
-            
-            # Process each file
+                msg = "At least one file must be specified"
+                raise ValueError(msg)
+
+            # Log authentication method
+            if github_token:
+                log.info("Using personal access token authentication")
+            else:
+                app_id = github_app.get("appId")
+                log.info(f"Using GitHub App authentication (App ID: {app_id})")
+
+            # Initialize GitHub manager
+            github_manager = GitHubFileManager(
+                logger=log, github_token=github_token, github_app=github_app
+            )
+
+            # Process files
             results = []
             errors = []
-            
-            for file_spec in files:
+
+            for i, file_spec in enumerate(files):
                 try:
-                    # Validate required fields
+                    # Extract file details
                     repository = file_spec.get("repository")
                     path = file_spec.get("path")
                     content = file_spec.get("content")
                     commit_message = file_spec.get("commitMessage")
                     branch = file_spec.get("branch", "main")
-                    
+
+                    # Validate required fields
                     if not all([repository, path, content, commit_message]):
-                        raise ValueError(f"Missing required fields for file {path}")
-                    
+                        msg = f"Missing required fields for file {path}"
+                        raise ValueError(msg)
+
                     # Commit the file
-                    result = github_client.commit_file(
+                    result = github_manager.commit_file(
                         repository=repository,
                         path=path,
                         content=content,
                         message=commit_message,
-                        branch=branch
+                        branch=branch,
                     )
-                    
                     results.append(result)
-                    log.info(f"Successfully processed file: {path}")
-                    
+                    log.info(f"Successfully processed file {i + 1}: {path}")
+
                 except Exception as e:
-                    error_msg = f"Failed to process file {file_spec.get('path', 'unknown')}: {str(e)}"
+                    error_msg = (
+                        f"Failed to process file {file_spec.get('path', 'unknown')}: "
+                        f"{e!s}"
+                    )
                     errors.append(error_msg)
                     log.error(error_msg)
-                    
-                    # Add failed result
-                    results.append({
-                        "success": False,
-                        "path": file_spec.get("path", "unknown"),
-                        "error": str(e)
-                    })
-            
-            # Create response context with results
-            response_context = {
+
+            # Create context with results
+            context = {
                 "github-file-manager": {
                     "success": len(errors) == 0,
-                    "filesProcessed": len(files),
+                    "filesProcessed": len(results),
                     "results": results,
-                    "errors": errors
+                    "errors": errors,
                 }
             }
-            
-            # Add context to response
-            rsp.context.update(response_context)
-            
-            if errors:
-                log.warning(f"Function completed with {len(errors)} errors")
-                # Set function result to indicate partial failure
-                rsp.results.append(
-                    fnv1.Result(
-                        severity=fnv1.SEVERITY_WARNING,
-                        message=f"GitHub file manager completed with {len(errors)} errors. Check context for details."
-                    )
-                )
-            else:
-                log.info("All files processed successfully")
+
+            # Set context in response
+            rsp.context.CopyFrom(json_format.ParseDict(context, rsp.context))
+
+            # Add appropriate result message
+            if len(errors) == 0:
+                success_msg = f"Successfully committed {len(results)} files to GitHub"
                 rsp.results.append(
                     fnv1.Result(
                         severity=fnv1.SEVERITY_NORMAL,
-                        message=f"Successfully committed {len(files)} files to GitHub"
+                        message=success_msg,
                     )
                 )
-            
-        except Exception as e:
-            error_msg = f"Function failed: {str(e)}"
-            log.error(error_msg)
-            
-            # Add error context
-            rsp.context.update({
-                "github-file-manager": {
-                    "success": False,
-                    "error": error_msg
-                }
-            })
-            
-            # Add fatal error result
-            rsp.results.append(
-                fnv1.Result(
-                    severity=fnv1.SEVERITY_FATAL,
-                    message=error_msg
+            else:
+                rsp.results.append(
+                    fnv1.Result(
+                        severity=fnv1.SEVERITY_WARNING,
+                        message=(
+                            f"GitHub file manager completed with {len(errors)} errors. "
+                            "Check context for details."
+                        ),
+                    )
                 )
+
+        except Exception as e:
+            # Handle any unexpected errors
+            error_msg = f"Function execution failed: {e!s}"
+            log.error(error_msg)
+
+            # Set error context
+            context = {"github-file-manager": {"success": False, "error": error_msg}}
+            rsp.context.CopyFrom(json_format.ParseDict(context, rsp.context))
+
+            rsp.results.append(
+                fnv1.Result(severity=fnv1.SEVERITY_FATAL, message=error_msg)
             )
 
+        log.info("GitHub file manager function completed")
         return rsp

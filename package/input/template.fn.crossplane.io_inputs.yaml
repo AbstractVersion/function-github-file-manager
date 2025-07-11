@@ -30,9 +30,28 @@ spec:
           spec:
             description: Specification for GitHub file management operation.
             properties:
+              # GitHub Personal Access Token Authentication (Option 1)
               githubToken:
-                description: GitHub personal access token for authentication.
+                description: GitHub personal access token for authentication. Use either this OR GitHub App authentication.
                 type: string
+              # GitHub App Authentication (Option 2)
+              githubApp:
+                description: GitHub App authentication credentials. Use either this OR githubToken.
+                type: object
+                properties:
+                  appId:
+                    description: GitHub App ID (numeric string).
+                    type: string
+                  installationId:
+                    description: GitHub App Installation ID for the target repositories.
+                    type: string
+                  privateKey:
+                    description: GitHub App private key in PEM format (typically from Kubernetes secret).
+                    type: string
+                required:
+                - appId
+                - installationId
+                - privateKey
               files:
                 description: List of files to commit to GitHub repositories.
                 type: array
@@ -61,8 +80,8 @@ spec:
                   - content
                   - commitMessage
             required:
-            - githubToken
             - files
+            # Note: Either githubToken OR githubApp is required (validated in function code)
         type: object
     served: true
     storage: true

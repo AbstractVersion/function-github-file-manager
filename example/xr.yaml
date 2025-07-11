@@ -3,11 +3,31 @@ kind: XKubeApp
 metadata:
   name: example-rest-api
 spec:
-  # GitHub settings
-  githubToken: "ghp_xxxxxxxxxxxxxxxxxxxx" # Real token would be from secret ref
+  # GitHub App Authentication (Recommended for production)
+  githubApp:
+    appId: "123456" # Your GitHub App ID
+    installationId: "12345678" # Installation ID for your organization/repository
+    # Private key should be referenced from a Kubernetes secret
+    privateKey: |
+      -----BEGIN RSA PRIVATE KEY-----
+      MIIEpAIBAAKCAQEA... (truncated for example)
+      ...your GitHub App private key in PEM format...
+      -----END RSA PRIVATE KEY-----
+
+  # Alternative: Personal Access Token Authentication (for development)
+  # githubToken: "ghp_xxxxxxxxxxxxxxxxxxxx"
+
+  # Repository settings
   repository: "novelcore/xdp-idp"
+  namespace: "production"
 
   # Application settings
-  image: "nginx:latest"
+  image: "nginx:1.21-alpine"
   port: 8080
-  replicas: 2
+  replicas: 3
+
+  # Multi-environment deployment (optional)
+  environments:
+  - "dev"
+  - "staging"
+  - "prod"

@@ -82,7 +82,18 @@ The function accepts the following input structure:
 apiVersion: github.fn.kubecore.io/v1beta1
 kind: Input
 spec:
-  githubToken: string          # Required: GitHub personal access token
+  # Authentication: Use EITHER githubToken OR githubApp (not both)
+  
+  # Option 1: Personal Access Token
+  githubToken: string          # GitHub personal access token
+  
+  # Option 2: GitHub App (Recommended)
+  githubApp:
+    appId: string              # GitHub App ID
+    installationId: string     # Installation ID for target repositories
+    privateKey: string         # Private key in PEM format
+  
+  # Files to commit
   files:                       # Required: Array of files to commit
     - repository: string       # Required: GitHub repo in "owner/repo" format
       path: string             # Required: File path within repository
@@ -110,18 +121,86 @@ context:
 
 ## Authentication
 
-### Development (Not Secure)
+The function supports two authentication methods: **GitHub App** (recommended for production) and **Personal Access Token** (for development).
 
-For development and testing, you can pass the token directly:
+### Option 1: GitHub App Authentication (Recommended)
+
+GitHub Apps provide enhanced security, granular permissions, and better rate limits.
+
+#### GitHub App Setup
+
+1. **Create a GitHub App:**
+   - Go to GitHub Settings → Developer settings → GitHub Apps → New GitHub App
+   - Set homepage URL, webhook URL (can be placeholder)
+   - Configure permissions:
+     - Repository permissions:
+       - **Contents**: Read & Write (to commit files)
+       - **Metadata**: Read (to access repository info)
+   - Install the app on target repositories
+
+2. **Get Required Information:**
+   - **App ID**: Found in app settings (e.g., `123456`)
+   - **Installation ID**: From installation URL or API (e.g., `12345678`)
+   - **Private Key**: Generate and download from app settings
+
+#### Production Usage (Kubernetes Secrets)
+
+```yaml
+# Create secret with GitHub App credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-app-credentials
+type: Opaque
+data:
+  app-id: MTIzNDU2  # base64("123456")
+  installation-id: MTIzNDU2Nzg=  # base64("12345678")
+  private-key: LS0tLS1CRUdJTi... # base64(private-key-pem-content)
+
+---
+# Use in composition
+spec:
+  githubApp:
+    appId: 
+      secretRef:
+        name: github-app-credentials
+        key: app-id
+    installationId:
+      secretRef:
+        name: github-app-credentials
+        key: installation-id
+    privateKey:
+      secretRef:
+        name: github-app-credentials
+        key: private-key
+```
+
+#### Development Usage (Direct Values)
+
+```yaml
+spec:
+  githubApp:
+    appId: "123456"
+    installationId: "12345678"
+    privateKey: |
+      -----BEGIN RSA PRIVATE KEY-----
+      MIIEpAIBAAKCAQEA...
+      ...your complete private key...
+      -----END RSA PRIVATE KEY-----
+```
+
+### Option 2: Personal Access Token
+
+Simpler setup for development and testing environments.
+
+#### Development Usage
 
 ```yaml
 spec:
   githubToken: "ghp_xxxxxxxxxxxxxxxxxxxx"
 ```
 
-### Production (Recommended)
-
-Use Kubernetes secrets for secure token management:
+#### Production Usage (Kubernetes Secrets)
 
 ```yaml
 # Create the secret
@@ -142,9 +221,45 @@ spec:
       key: token
 ```
 
+### GitHub App vs Personal Access Token
+
+| Feature | GitHub App | Personal Access Token |
+|---------|------------|----------------------|
+| **Security** | ✅ Granular permissions | ❌ Broad user permissions |
+| **Rate Limits** | ✅ 5,000 requests/hour | ❌ 1,000 requests/hour |
+| **Audit Trail** | ✅ App-specific logs | ❌ Mixed with user activity |
+| **Token Rotation** | ✅ Automatic (1 hour) | ❌ Manual rotation required |
+| **Organization Control** | ✅ Centrally managed | ❌ User-dependent |
+| **Setup Complexity** | ❌ More complex | ✅ Simple |
+| **Best For** | Production, teams | Development, testing |
+
 ## Examples
 
-### Single File Commit
+### Single File Commit (GitHub App)
+
+```yaml
+spec:
+  githubApp:
+    appId: "123456"
+    installationId: "12345678"
+    privateKey: |
+      -----BEGIN RSA PRIVATE KEY-----
+      MIIEpAIBAAKCAQEA...
+      -----END RSA PRIVATE KEY-----
+  files:
+  - repository: "myorg/myrepo"
+    path: "config/app.yaml"
+    content: |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: app-config
+      data:
+        env: production
+    commitMessage: "Update app configuration"
+```
+
+### Single File Commit (Personal Token)
 
 ```yaml
 spec:
@@ -322,13 +437,36 @@ kubectl logs -l app=function-github-file-manager
 
 ### GitHub API errors
 
+#### For Personal Access Tokens
+
 ```bash
 # Check token permissions
 curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user
 
-# Verify repository access
+# Verify repository access  
 curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/owner/repo
 ```
+
+#### For GitHub Apps
+
+```bash
+# Check app installations (requires JWT token)
+curl -H "Authorization: Bearer $JWT_TOKEN" https://api.github.com/app/installations
+
+# Check installation repositories (requires installation token)
+curl -H "Authorization: token $INSTALLATION_TOKEN" https://api.github.com/installation/repositories
+
+# Verify app permissions on specific repo
+curl -H "Authorization: token $INSTALLATION_TOKEN" https://api.github.com/repos/owner/repo
+```
+
+#### Common GitHub App Issues
+
+1. **Invalid App ID or Installation ID**: Check your GitHub App settings
+2. **Private Key Format**: Ensure PEM format with proper line breaks
+3. **Clock Skew**: Function handles JWT timing automatically
+4. **Permissions**: Verify app has Contents: Write permission
+5. **Installation**: Ensure app is installed on target repositories
 
 ### Composition errors
 
