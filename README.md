@@ -22,6 +22,7 @@ EOF
 
 - **Direct GitHub API integration** - No intermediate Kubernetes resources
 - **Dual authentication support** - Personal access tokens and GitHub Apps
+- **Kubernetes secret references** - Secure credential management with `secretRef` support (NEW in v0.2.0)
 - **Multiple files per operation** - Commit multiple files in a single function call
 - **Branch targeting** - Specify target branches for commits
 - **Idempotent operations** - Handles both file creation and updates automatically
@@ -48,8 +49,9 @@ input:
 ```
 
 ### GitHub App (Production Recommended)
-More secure authentication using GitHub App credentials:
+More secure authentication using GitHub App credentials.
 
+**Option 1: Direct values** (for development/testing):
 ```yaml
 input:
   apiVersion: github.fn.kubecore.io/v1beta1
@@ -61,6 +63,30 @@ input:
       -----BEGIN RSA PRIVATE KEY-----
       YOUR_PRIVATE_KEY_HERE
       -----END RSA PRIVATE KEY-----
+  files: [...]
+```
+
+**Option 2: Secret references** (recommended for production):
+```yaml
+input:
+  apiVersion: github.fn.kubecore.io/v1beta1
+  kind: Input
+  githubApp:
+    appId:
+      secretRef:
+        name: "github-app-repo-creds"
+        namespace: "argocd"
+        key: "githubAppID"
+    installationId:
+      secretRef:
+        name: "github-app-repo-creds"
+        namespace: "argocd"
+        key: "githubAppInstallationID"
+    privateKey:
+      secretRef:
+        name: "github-app-repo-creds"
+        namespace: "argocd"
+        key: "githubAppPrivateKey"
   files: [...]
 ```
 

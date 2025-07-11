@@ -8,10 +8,30 @@ kind: Input
 spec:
   # Choose authentication method:
   githubToken: "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  # OR
+  
+  # GitHub App with direct values (development/testing)
   githubApp:
     appId: "123456"
     installationId: "78901234"
     privateKey: "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+  
+  # GitHub App with secret references (production - NEW in v0.2.0)
+  githubApp:
+    appId:
+      secretRef:
+        name: "github-app-repo-creds"
+        namespace: "argocd"
+        key: "githubAppID"
+    installationId:
+      secretRef:
+        name: "github-app-repo-creds"
+        namespace: "argocd"
+        key: "githubAppInstallationID"
+    privateKey:
+      secretRef:
+        name: "github-app-repo-creds"
+        namespace: "argocd"
+        key: "githubAppPrivateKey"
   
   files:
     - repository: "owner/repo"          # Required: GitHub repo

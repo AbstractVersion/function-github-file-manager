@@ -37,6 +37,38 @@ python function/main.py --insecure --debug
 # You should see: "Serving function..."
 ```
 
+## ✨ **NEW in v0.2.0: Secret Reference Support**
+
+The function now supports Kubernetes secret references! You can use either:
+
+1. **Direct credentials** (for local testing):
+```yaml
+githubApp:
+  appId: "123456"
+  installationId: "78901234" 
+  privateKey: "-----BEGIN RSA PRIVATE KEY-----\n..."
+```
+
+2. **Secret references** (for production):
+```yaml
+githubApp:
+  appId:
+    secretRef:
+      name: "github-app-repo-creds"
+      namespace: "argocd"
+      key: "githubAppID"
+  installationId:
+    secretRef:
+      name: "github-app-repo-creds"
+      namespace: "argocd"
+      key: "githubAppInstallationID"
+  privateKey:
+    secretRef:
+      name: "github-app-repo-creds"
+      namespace: "argocd"
+      key: "githubAppPrivateKey"
+```
+
 ## 🧪 Testing Methods
 
 ### Method 1: Unit Tests (Recommended for Auth Issues)
