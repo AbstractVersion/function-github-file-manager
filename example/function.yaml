@@ -1,0 +1,88 @@
+---
+# Install the GitHub File Manager Function from GitHub Container Registry
+apiVersion: pkg.crossplane.io/v1beta1
+kind: Function
+metadata:
+  name: function-github-file-manager
+spec:
+  # Use the latest version or pin to a specific version
+  package: ghcr.io/abstractversion/function-github-file-manager:latest
+  # For a specific version, use:
+  # package: ghcr.io/abstractversion/function-github-file-manager:v0.0.0-20250711135438-6e598bdfd294
+---
+# Example of using the function in a composition
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: example-github-deployment
+spec:
+  compositeTypeRef:
+    apiVersion: example.io/v1alpha1
+    kind: XApp
+
+  functions:
+  - name: commit-deployment-files
+    type: function
+    step: github-commit
+    functionRef:
+      name: function-github-file-manager
+    input:
+      apiVersion: github.fn.kubecore.io/v1beta1
+      kind: Input
+
+      # Option 1: Personal Access Token (for development)
+      githubToken: "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+      # Option 2: GitHub App (recommended for production)
+      # githubApp:
+      #   appId: "12345"
+      #   installationId: "67890"
+      #   privateKey: |
+      #     -----BEGIN RSA PRIVATE KEY-----
+      #     YOUR_PRIVATE_KEY_HERE
+      #     -----END RSA PRIVATE KEY-----
+
+      files:
+      - repository: "your-org/your-gitops-repo"
+        path: "apps/example-app/deployment.yaml"
+        content: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: example-app
+            namespace: production
+          spec:
+            replicas: 3
+            selector:
+              matchLabels:
+                app: example-app
+            template:
+              metadata:
+                labels:
+                  app: example-app
+              spec:
+                containers:
+                - name: app
+                  image: nginx:latest
+                  ports:
+                  - containerPort: 80
+        commitMessage: "Deploy example-app to production"
+        branch: "main"
+
+      - repository: "your-org/your-gitops-repo"
+        path: "apps/example-app/service.yaml"
+        content: |
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: example-app-service
+            namespace: production
+          spec:
+            selector:
+              app: example-app
+            ports:
+            - port: 80
+              targetPort: 80
+            type: ClusterIP
+        commitMessage: "Add service for example-app"
+        branch: "main"

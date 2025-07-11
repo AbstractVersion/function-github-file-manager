@@ -4,40 +4,83 @@ kind: Function
 metadata:
   name: function-github-file-manager
   annotations:
-    meta.crossplane.io/maintainer: Kubecore Team
-    meta.crossplane.io/source: github.com/kubecore/function-github-file-manager
+    meta.crossplane.io/maintainer: AbstractVersion
+    meta.crossplane.io/source: github.com/AbstractVersion/function-github-file-manager
     meta.crossplane.io/license: Apache-2.0
     meta.crossplane.io/description: |
       A Crossplane composition function that commits files directly to GitHub repositories.
-      Supports multiple files, custom commit messages, and branch targeting.
+      Supports both personal access tokens and GitHub App authentication.
+      Handles multiple files, custom commit messages, and branch targeting.
     meta.crossplane.io/readme: |
       # GitHub File Manager Function
 
       This function commits files directly to GitHub repositories using the GitHub API.
-      It takes a list of files with their content and commits them to the specified 
-      repositories and paths.
+      It supports both personal access tokens and GitHub App authentication.
 
       ## Features
-      - Direct GitHub API integration
+      - Direct GitHub API integration (no intermediate resources)
+      - Personal Access Token authentication
+      - GitHub App authentication (recommended for production)
       - Multiple files per operation
-      - Custom commit messages
-      - Branch targeting
-      - Idempotent operations
+      - Custom commit messages and branch targeting
+      - Idempotent operations (handles file updates)
+      - Comprehensive error handling
 
-      ## Usage
+      ## Authentication Methods
+
+      ### Personal Access Token
       ```yaml
-      functionRef:
-        name: function-github-file-manager
       input:
         apiVersion: github.fn.kubecore.io/v1beta1
         kind: Input
-        spec:
-          githubToken: "ghp_xxxxxxxxxxxx"
-          files:
-            - repository: "owner/repo"
-              path: "path/to/file.yaml"
-              content: "file content here"
-              commitMessage: "Add new file"
+        githubToken: "ghp_xxxxxxxxxxxx"
+        files: [...]
+      ```
+
+      ### GitHub App (Recommended)
+      ```yaml
+      input:
+        apiVersion: github.fn.kubecore.io/v1beta1
+        kind: Input
+        githubApp:
+          appId: "12345"
+          installationId: "67890"
+          privateKey: "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+        files: [...]
+      ```
+
+      ## Usage Example
+      ```yaml
+      apiVersion: pkg.crossplane.io/v1beta1
+      kind: Function
+      metadata:
+        name: function-github-file-manager
+      spec:
+        package: ghcr.io/abstractversion/function-github-file-manager:latest
+      ---
+      apiVersion: apiextensions.crossplane.io/v1
+      kind: Composition
+      spec:
+        functions:
+          - name: github-commit
+            type: function
+            step: commit-files
+            functionRef:
+              name: function-github-file-manager
+            input:
+              apiVersion: github.fn.kubecore.io/v1beta1
+              kind: Input
+              githubToken: "ghp_xxxxxxxxxxxx"
+              files:
+                - repository: "owner/repo"
+                  path: "apps/app1/config.yaml"
+                  content: |
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: app-config
+                  commitMessage: "Deploy app1 configuration"
+                  branch: "main"
       ```
 spec:
-  package: xpkg.upbound.io/kubecore/function-github-file-manager
+  package: ghcr.io/abstractversion/function-github-file-manager
