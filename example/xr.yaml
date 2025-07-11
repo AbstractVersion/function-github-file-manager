@@ -1,7 +1,13 @@
-# Replace this with your XR!
-apiVersion: example.crossplane.io/v1
-kind: XR
+apiVersion: kubecore.io/v1alpha1
+kind: XKubeApp
 metadata:
-  name: example-xr
+  name: example-rest-api
 spec:
-  region: us-east-2
+  # GitHub settings
+  githubToken: "ghp_xxxxxxxxxxxxxxxxxxxx" # Real token would be from secret ref
+  repository: "novelcore/xdp-idp"
+
+  # Application settings
+  image: "nginx:latest"
+  port: 8080
+  replicas: 2

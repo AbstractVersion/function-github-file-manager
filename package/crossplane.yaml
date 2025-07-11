@@ -2,5 +2,42 @@
 apiVersion: meta.pkg.crossplane.io/v1beta1
 kind: Function
 metadata:
-  name: function-template-python
-spec: {}
+  name: function-github-file-manager
+  annotations:
+    meta.crossplane.io/maintainer: Kubecore Team
+    meta.crossplane.io/source: github.com/kubecore/function-github-file-manager
+    meta.crossplane.io/license: Apache-2.0
+    meta.crossplane.io/description: |
+      A Crossplane composition function that commits files directly to GitHub repositories.
+      Supports multiple files, custom commit messages, and branch targeting.
+    meta.crossplane.io/readme: |
+      # GitHub File Manager Function
+
+      This function commits files directly to GitHub repositories using the GitHub API.
+      It takes a list of files with their content and commits them to the specified 
+      repositories and paths.
+
+      ## Features
+      - Direct GitHub API integration
+      - Multiple files per operation
+      - Custom commit messages
+      - Branch targeting
+      - Idempotent operations
+
+      ## Usage
+      ```yaml
+      functionRef:
+        name: function-github-file-manager
+      input:
+        apiVersion: github.fn.kubecore.io/v1beta1
+        kind: Input
+        spec:
+          githubToken: "ghp_xxxxxxxxxxxx"
+          files:
+            - repository: "owner/repo"
+              path: "path/to/file.yaml"
+              content: "file content here"
+              commitMessage: "Add new file"
+      ```
+spec:
+  package: xpkg.upbound.io/kubecore/function-github-file-manager
