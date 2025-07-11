@@ -28,6 +28,11 @@ EOF
 - **Comprehensive error handling** - Clear error messages and partial failure support
 - **Production ready** - Includes timeouts, retries, and security best practices
 
+## 📚 Documentation
+
+- **[AGENT_GUIDE.md](./AGENT_GUIDE.md)** - Comprehensive guide for AI agents using this function in compositions
+- **[QUICK_REFERENCE.md](./QUICK_REFERENCE.md)** - Quick reference for common patterns and troubleshooting
+
 ## 🔐 Authentication Methods
 
 ### Personal Access Token (Development)
