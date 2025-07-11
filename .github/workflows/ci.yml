@@ -26,7 +26,7 @@ env:
   # The package to push, without a version tag. The default matches GitHub. For
   # example xpkg.crossplane.io/crossplane/function-template-go. Note that
   # xpkg.crossplane.io is just an alias for ghcr.io, so we upload to ghcr.io but
-  # this'll be pulled from xpkg.crossplane.io.
+  # this'll be pulled from xpkg.crossplane.io. The repository name must be lowercase.
   XPKG: ghcr.io/${{ github.repository}}
 
   # The package version to push. The default is 0.0.0-gitsha.
@@ -159,5 +159,8 @@ jobs:
         if: env.XPKG_VERSION == ''
         run: echo "XPKG_VERSION=v0.0.0-$(date -d@$(git show -s --format=%ct) +%Y%m%d%H%M%S)-$(git rev-parse --short=12 HEAD)" >> $GITHUB_ENV
 
+      - name: Set Lowercase Package Name
+        run: echo "XPKG_LOWER=$(echo '${{ env.XPKG }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Push Multi-Platform Package to GitHub Container Registry
-        run: "./crossplane --verbose xpkg push --package-files $(echo *.xpkg|tr ' ' ,) ${{ env.XPKG }}:${{ env.XPKG_VERSION }}"
+        run: "./crossplane --verbose xpkg push --package-files $(echo *.xpkg|tr ' ' ,) ${{ env.XPKG_LOWER }}:${{ env.XPKG_VERSION }}"
