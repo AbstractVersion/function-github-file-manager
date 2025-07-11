@@ -32,6 +32,7 @@ EOF
 
 - **[AGENT_GUIDE.md](./AGENT_GUIDE.md)** - Comprehensive guide for AI agents using this function in compositions
 - **[QUICK_REFERENCE.md](./QUICK_REFERENCE.md)** - Quick reference for common patterns and troubleshooting
+- **[LOCAL_TESTING.md](./LOCAL_TESTING.md)** - Complete guide for local testing and debugging authentication issues
 
 ## 🔐 Authentication Methods
 
