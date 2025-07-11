@@ -3,7 +3,7 @@
 import base64
 import dataclasses
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 
 import requests
 from crossplane.function import logging
@@ -17,6 +17,98 @@ TEST_TOKEN = "test_token"  # noqa: S105
 TEST_PRIVATE_KEY = (
     "-----BEGIN RSA PRIVATE KEY-----\ntest_key\n-----END RSA PRIVATE KEY-----"
 )
+
+
+class TestSecretResolution(unittest.TestCase):
+    """Test secret resolution functionality."""
+
+    def setUp(self) -> None:
+        """Set up test fixtures."""
+        self.mock_logger = Mock()
+
+    @patch('function.fn.client.CoreV1Api')
+    @patch('function.fn.config.load_incluster_config')
+    def test_resolve_secret_value_success(self, mock_load_config, mock_v1_api_class):
+        """Test successful secret resolution."""
+        # Mock Kubernetes client
+        mock_v1_api = Mock()
+        mock_v1_api_class.return_value = mock_v1_api
+        
+        # Mock secret data
+        mock_secret = Mock()
+        mock_secret.data = {
+            "githubAppID": base64.b64encode(b"123456").decode('utf-8'),
+            "githubAppPrivateKey": base64.b64encode(b"test-private-key").decode('utf-8')
+        }
+        mock_v1_api.read_namespaced_secret.return_value = mock_secret
+        
+        # Test secret resolution
+        secret_ref = {
+            "name": "github-app-repo-creds",
+            "namespace": "argocd", 
+            "key": "githubAppID"
+        }
+        
+        result = fn.resolve_secret_value(secret_ref, self.mock_logger)
+        
+        self.assertEqual(result, "123456")
+        mock_v1_api.read_namespaced_secret.assert_called_once_with(
+            name="github-app-repo-creds", 
+            namespace="argocd"
+        )
+
+    @patch('function.fn.client.CoreV1Api')
+    @patch('function.fn.config.load_incluster_config')
+    def test_resolve_secret_value_missing_key(self, mock_load_config, mock_v1_api_class):
+        """Test secret resolution with missing key."""
+        mock_v1_api = Mock()
+        mock_v1_api_class.return_value = mock_v1_api
+        
+        mock_secret = Mock()
+        mock_secret.data = {"other-key": "dGVzdA=="}  # base64 encoded "test"
+        mock_v1_api.read_namespaced_secret.return_value = mock_secret
+        
+        secret_ref = {
+            "name": "test-secret",
+            "namespace": "default",
+            "key": "missing-key"
+        }
+        
+        result = fn.resolve_secret_value(secret_ref, self.mock_logger)
+        
+        self.assertIsNone(result)
+        self.mock_logger.error.assert_called()
+
+    def test_resolve_credential_value_direct_string(self):
+        """Test resolving direct string credential."""
+        result = fn.resolve_credential_value("direct-value", self.mock_logger)
+        self.assertEqual(result, "direct-value")
+
+    @patch('function.fn.resolve_secret_value')
+    def test_resolve_credential_value_secret_ref(self, mock_resolve_secret):
+        """Test resolving secret reference credential."""
+        mock_resolve_secret.return_value = "resolved-value"
+        
+        cred_value = {
+            "secretRef": {
+                "name": "test-secret",
+                "key": "test-key"
+            }
+        }
+        
+        result = fn.resolve_credential_value(cred_value, self.mock_logger)
+        
+        self.assertEqual(result, "resolved-value")
+        mock_resolve_secret.assert_called_once_with(
+            {"name": "test-secret", "key": "test-key"}, 
+            self.mock_logger
+        )
+
+    def test_resolve_credential_value_invalid_format(self):
+        """Test resolving invalid credential format."""
+        result = fn.resolve_credential_value(123, self.mock_logger)  # Invalid type
+        self.assertIsNone(result)
+        self.mock_logger.error.assert_called()
 
 
 class TestGitHubFileManager(unittest.TestCase):
@@ -562,3 +654,100 @@ class TestFunctionRunner(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(github_context["success"], False)
         self.assertEqual(github_context["filesProcessed"], 0)
         self.assertEqual(len(github_context["errors"]), 1)
+
+    @patch('function.fn.resolve_credential_value')
+    async def test_run_function_with_secret_references(self, mock_resolve_cred):
+        """Test function execution with secret references."""
+        # Mock credential resolution
+        mock_resolve_cred.side_effect = lambda val, logger: {
+            'secretRef': {
+                'name': 'github-app-repo-creds',
+                'key': 'githubAppID'
+            }
+        }.get('secretRef', {}).get('key') == 'githubAppID' and "123456" or \
+        {
+            'secretRef': {
+                'name': 'github-app-repo-creds', 
+                'key': 'githubAppInstallationID'
+            }
+        }.get('secretRef', {}).get('key') == 'githubAppInstallationID' and "78901234" or \
+        {
+            'secretRef': {
+                'name': 'github-app-repo-creds',
+                'key': 'githubAppPrivateKey'
+            }
+        }.get('secretRef', {}).get('key') == 'githubAppPrivateKey' and TEST_PRIVATE_KEY or str(val)
+        
+        # Simplified mock - just return expected values in order
+        mock_resolve_cred.side_effect = ["123456", "78901234", TEST_PRIVATE_KEY]
+
+        req = fnv1.RunFunctionRequest(
+            meta=fnv1.RequestMeta(tag="test"),
+            input={
+                "githubApp": {
+                    "appId": {
+                        "secretRef": {
+                            "name": "github-app-repo-creds",
+                            "namespace": "argocd",
+                            "key": "githubAppID"
+                        }
+                    },
+                    "installationId": {
+                        "secretRef": {
+                            "name": "github-app-repo-creds", 
+                            "namespace": "argocd",
+                            "key": "githubAppInstallationID"
+                        }
+                    },
+                    "privateKey": {
+                        "secretRef": {
+                            "name": "github-app-repo-creds",
+                            "namespace": "argocd", 
+                            "key": "githubAppPrivateKey"
+                        }
+                    }
+                },
+                "files": [
+                    {
+                        "repository": "owner/repo",
+                        "path": "test/file1.yaml",
+                        "content": "content1",
+                        "commitMessage": "Add file1",
+                    }
+                ],
+            },
+            observed=fnv1.State(),
+        )
+
+        runner = fn.FunctionRunner()
+
+        # Mock the GitHubFileManager
+        with patch("function.fn.GitHubFileManager") as mock_manager_class:
+            mock_manager = Mock()
+            mock_manager_class.return_value = mock_manager
+
+            # Mock successful commit
+            mock_manager.commit_file.return_value = {
+                "success": True,
+                "path": "test/file1.yaml", 
+                "sha": "sha1",
+                "githubUrl": "url1",
+            }
+
+            response = await runner.RunFunction(req, None)
+
+            # Verify credential resolution was called
+            self.assertEqual(mock_resolve_cred.call_count, 3)
+
+            # Verify GitHubFileManager was initialized with resolved credentials
+            mock_manager_class.assert_called_once()
+            call_args, call_kwargs = mock_manager_class.call_args
+            self.assertIsNone(call_kwargs["github_token"])
+            self.assertIsNotNone(call_kwargs["github_app"])
+            self.assertEqual(call_kwargs["github_app"]["appId"], "123456")
+            self.assertEqual(call_kwargs["github_app"]["installationId"], "78901234") 
+            self.assertEqual(call_kwargs["github_app"]["privateKey"], TEST_PRIVATE_KEY)
+
+            # Verify function succeeded
+            self.assertEqual(len(response.results), 1)
+            self.assertEqual(response.results[0].severity, fnv1.SEVERITY_NORMAL)

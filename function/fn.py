@@ -14,6 +14,8 @@ import requests
 from crossplane.function import logging
 from crossplane.function.proto.v1 import run_function_pb2 as fnv1
 from google.protobuf import json_format
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
 
 # Constants for HTTP status codes
 HTTP_OK = 200
@@ -22,6 +24,77 @@ HTTP_NOT_FOUND = 404
 
 # Security: timeout for requests
 REQUEST_TIMEOUT = 30
+
+
+def resolve_secret_value(secret_ref: dict, logger) -> str | None:
+    """Resolve a Kubernetes secret reference to its actual value.
+    
+    Args:
+        secret_ref: Dictionary with 'name', 'namespace', and 'key' fields
+        logger: Logger instance
+        
+    Returns:
+        The secret value as a string, or None if not found
+    """
+    try:
+        # Load Kubernetes config (in-cluster config for function pods)
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            # Fallback to local config for development
+            config.load_kube_config()
+            
+        v1 = client.CoreV1Api()
+        
+        name = secret_ref.get("name")
+        namespace = secret_ref.get("namespace", "default")
+        key = secret_ref.get("key")
+        
+        if not all([name, key]):
+            logger.error(f"Invalid secret reference: {secret_ref}")
+            return None
+            
+        logger.info(f"Resolving secret {namespace}/{name} key {key}")
+        
+        # Get the secret
+        secret = v1.read_namespaced_secret(name=name, namespace=namespace)
+        
+        if key not in secret.data:
+            logger.error(f"Key '{key}' not found in secret {namespace}/{name}")
+            return None
+            
+        # Decode from base64
+        value = base64.b64decode(secret.data[key]).decode('utf-8')
+        logger.info(f"Successfully resolved secret {namespace}/{name} key {key}")
+        return value
+        
+    except ApiException as e:
+        logger.error(f"Kubernetes API error resolving secret: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error resolving secret reference: {e}")
+        return None
+
+
+def resolve_credential_value(cred_value, logger) -> str | None:
+    """Resolve a credential value that might be a direct string or secret reference.
+    
+    Args:
+        cred_value: Either a string value or a dict with 'secretRef'
+        logger: Logger instance
+        
+    Returns:
+        The resolved credential value as a string
+    """
+    if isinstance(cred_value, str):
+        # Direct string value
+        return cred_value
+    elif isinstance(cred_value, dict) and "secretRef" in cred_value:
+        # Secret reference
+        return resolve_secret_value(cred_value["secretRef"], logger)
+    else:
+        logger.error(f"Invalid credential value format: {cred_value}")
+        return None
 
 
 class GitHubFileManager:
@@ -275,9 +348,39 @@ class FunctionRunner:
             log.info(f"Input received: {json.dumps(input_dict, indent=2)}")
 
             # Extract required parameters
-            github_token = input_dict.get("githubToken")
-            github_app = input_dict.get("githubApp")
+            github_token_raw = input_dict.get("githubToken")
+            github_app_raw = input_dict.get("githubApp")
             files = input_dict.get("files", [])
+
+            # Resolve credentials (handle secret references)
+            github_token = None
+            github_app = None
+
+            if github_token_raw:
+                github_token = resolve_credential_value(github_token_raw, log)
+                if not github_token:
+                    msg = "Failed to resolve GitHub token"
+                    raise ValueError(msg)
+
+            if github_app_raw:
+                log.info("Resolving GitHub App credentials...")
+                app_id = resolve_credential_value(github_app_raw.get("appId"), log)
+                installation_id = resolve_credential_value(github_app_raw.get("installationId"), log)
+                private_key = resolve_credential_value(github_app_raw.get("privateKey"), log)
+
+                if not all([app_id, installation_id, private_key]):
+                    missing = []
+                    if not app_id: missing.append("appId")
+                    if not installation_id: missing.append("installationId")
+                    if not private_key: missing.append("privateKey")
+                    msg = f"Failed to resolve GitHub App credentials: {', '.join(missing)}"
+                    raise ValueError(msg)
+
+                github_app = {
+                    "appId": app_id,
+                    "installationId": installation_id,
+                    "privateKey": private_key
+                }
 
             # Validate authentication
             if not github_token and not github_app:
