@@ -29,6 +29,7 @@ spec:
             type: object
           spec:
             description: Specification for GitHub file management operation.
+            type: object
             properties:
               # GitHub Personal Access Token Authentication (Option 1)
               githubToken:
